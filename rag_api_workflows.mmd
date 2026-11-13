@@ -1,0 +1,131 @@
+# rag-api workflow diagrams
+#
+# Render with Mermaid-compatible tools (GitHub Markdown, Mermaid Live Editor,
+# VS Code Mermaid extensions, or documentation platforms supporting Mermaid).
+
+## 1. System components
+
+```mermaid
+flowchart TB
+    Client[Client / AI platform] --> API[FastAPI application]
+    API --> TM[MultiTenantRAGManager]
+    TM --> LI[Tenant LightRAG instance]
+    API --> PARSE[Parser selection and task processing]
+    PARSE --> DIRECT[Direct text insertion]
+    PARSE --> DOC[Docling]
+    PARSE --> MINERU[MinerU]
+    PARSE --> OCR[DeepSeek-OCR]
+    DOC --> RA[RAG-Anything]
+    MINERU --> RA
+    DIRECT --> LI
+    OCR --> LI
+    RA --> LI
+    LI --> KV[(DragonflyDB / Redis-compatible KV)]
+    LI --> V[(Qdrant vector database)]
+    LI --> G[(Memgraph graph database)]
+    LI --> STATUS[(Document status storage)]
+```
+
+## 2. Lazy tenant instance creation
+
+```mermaid
+flowchart TD
+    R[Request includes tenant_id] --> M[MultiTenantRAGManager]
+    M --> C{Instance already cached?}
+    C -- Yes --> RET[Return cached LightRAG instance]
+    C -- No --> CFG[Load tenant configuration and global defaults]
+    CFG --> NEW[Construct LightRAG with tenant workspace]
+    NEW --> INIT[Initialize storage components]
+    INIT --> CACHE[Cache instance]
+    CACHE --> RET
+```
+
+## 3. Document ingestion and extraction
+
+```mermaid
+flowchart TD
+    A[POST /insert: tenant_id, doc_id, file, parser options] --> B[Validate upload]
+    B --> C[Stage file temporarily]
+    C --> D[Create task record and return task_id]
+    D --> E[Background document processing]
+    E --> F[Get or create tenant LightRAG instance]
+    F --> P{Select extraction path}
+    P -->|Text / Markdown / supported text-like file| TXT[Read text directly]
+    P -->|Docling| DOC[Docling conversion]
+    P -->|Local MinerU| ML[MinerU local parsing]
+    P -->|Remote MinerU| MR[Remote MinerU service]
+    P -->|DeepSeek-OCR| OCR[OCR client / model]
+    DOC --> RA[RAG-Anything processing]
+    ML --> RA
+    MR --> RP[Process remote MinerU result]
+    TXT --> INS[Send content to LightRAG]
+    OCR --> INS
+    RA --> INS
+    RP --> INS
+    INS --> IDX[Chunking, embeddings, entity/relation extraction]
+    IDX --> STORES[(KV + Vector + Graph storage)]
+    STORES --> CLEAN[Temporary upload cleanup]
+    CLEAN --> DONE[Task status reconciled with document status]
+```
+
+## 4. LightRAG indexing
+
+```mermaid
+flowchart TD
+    CONTENT[Extracted text / supported multimodal content] --> CHUNK[Prepare and split into chunks]
+    CHUNK --> KV[Persist chunk text and metadata in KV storage]
+    CHUNK --> EMB[Generate chunk embeddings]
+    EMB --> Q1[(Qdrant: chunk vectors)]
+    CHUNK --> LLM[LLM extracts entities and relationships]
+    LLM --> MERGE[Merge / update entity and relation information]
+    MERGE --> GRAPH[(Memgraph: graph nodes and edges)]
+    MERGE --> EREMB[Generate entity and relationship embeddings]
+    EREMB --> Q2[(Qdrant: entity and relation vectors)]
+    CHUNK --> SRC[Maintain document / source associations]
+    SRC --> KV
+```
+
+## 5. Query workflow (conceptual mix mode)
+
+```mermaid
+flowchart TD
+    Q[User question] --> PREP[Query preparation / keyword extraction]
+    PREP --> QD[(Qdrant)]
+    QD --> EH[Entity vector hits]
+    QD --> RH[Relationship vector hits]
+    QD --> CH[Chunk vector hits]
+    EH --> MG[(Memgraph)]
+    RH --> MG
+    MG --> GR[Relevant graph nodes and edges]
+    CH --> KV[(DragonflyDB / KV)]
+    GR --> KV
+    KV --> CTX[Fetch source chunk text and assemble context]
+    CTX --> LLM[Query LLM]
+    LLM --> ANS[Answer]
+```
+
+## 6. Roles of the three main databases
+
+```mermaid
+flowchart LR
+    Q[Question / search terms] --> V[(Qdrant)]
+    V -->|Candidate vector IDs| G[(Memgraph)]
+    G -->|Graph nodes, edges, descriptions| K[(DragonflyDB / KV)]
+    V -->|Relevant chunk IDs| K
+    K -->|Original text passages| C[Context assembly]
+    G --> C
+    C --> L[LLM]
+    L --> A[Answer]
+```
+
+## 7. Task status lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> Processing
+    Processing --> Completed
+    Processing --> Failed
+    Completed --> [*]
+    Failed --> [*]
+```
